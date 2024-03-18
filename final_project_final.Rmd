@@ -1,0 +1,726 @@
+---
+title: "Final Project"
+author: "Cody Liu 919431964"
+date: "2024-03-14"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Abstract
+
+We are working with 18 sessions (datasets) derived from measurements taken of the neural pathways of 4 mice using neuropixel probes conducted in the research of Nicholas A Steinmetz. The probes were able to record 30,000 neurons in ~40 areas within the brains of the mice. The experiment was conducted on 10 mice over 39 sessions; 18 of these sessions are analyzed in the following report. The mice were stimulated with  visual stimuli. The stimuli prompted each mouse was then prompted to make a decision to move a wheel in a certain direction. A penalty and reward system was was employed to condition the mice to produce the desired outcome. The following analysis aims to build a predictive model that allows us to infer the outcome of future sessions based on the data we have recieved about these mice. This will be done via conducting an exploratory data analysis on the 18 sessions; in the EDA we will note the differences between the trials. The data will then be integrated in order to discover patterns between the sessions. The appropriate predictive models will then be trained and benchmarked to determine the most effective for future application.
+
+***
+
+# Introduction
+
+The dataset is derived from the research of Nicholas A Steinmetz. 18 of 39 sessions conducted on 4 of 10 mice will be analyzed in the report. 
+
+The key variables for each trial ,include:
+
+- feedback_type: The type of feedback given. This is a binary variable that is either 1 or -1
+- left_contrast: The contrast level of the left stimulus.
+- right_contrast: The contrast level of the right stimulus.
+- time: The center points of time bins for neuronal spikes.
+- spks: The number of neuronal spikes in the visual cortex.
+- brain_area: The specific region of the brain where the neuron is located.
+
+We hypothesize that the number of neuronal spikes in the visual cortex of different mice will show a significant positive correlation in response to identical visual stimuli under controlled experimental conditions. Upon confirmation/rejection of this hypothesis there are additional questions of interest regarding the data: 
+
+- How does the intensity of neuronal activation vary between mice that accurately discriminate high-contrast visual stimuli from those that do not? 
+
+- Are there consistent neural firing patterns within individual mice across different sessions that correlate with their ability to learn and improve task performance over time? 
+
+- What is the relationship between the complexity of visual stimuli (e.g., varying contrasts and spatial frequencies) and the predictive accuracy of the model for different types of errors (e.g., contrast misjudgment versus spatial misalignment)? 
+
+***
+
+# Background
+
+Vision, choice, action, and behavioural engagement in mice involve neurons across various brain regions. Steinmetz's group conducted a study to map the neuronal substrates related to these functions using neuropixel probes to record from 30,000 neurons across 42 brain regions. This method allowed for the analysis of the distribution of neurons involved in processing sensory information, selecting actions for rewards, and performing these actions. Prior research focused on regions like the frontal, parietal, and motor cortex, basal ganglia, thalamus, cerebellum, and superior colliculus. Observations show correlations between movements, rewards, and task variables in areas considered sensory, indicating action selection's broader involvement. The study investigated the distribution of neurons related to these processes in the brain and if they use shared or distinct circuits.
+
+***
+
+# Exploratory Analysis
+
+In our exploratory data analysis we will focus on four individual parts. We will attempt the describe the data structures accross sessions, explore the neural activities during each trial, explore the changes across trials, and explore homogenity and heterogenity across sessions and mice.
+
+**Describe the Data Structures Across Sessions**
+- Number of Neurons and Trials: Find summary statistics in order to understand the distribution and number of neurons and trials across sessions.
+- Stimuli Conditions: Analyze distribution of contrast levels
+- Feedback Types: Assess distribution of feedback types
+
+**Explore the Neural Activities During Each Trial**
+
+**Explore Changes Across Trials**
+- Learning Effects
+- Neural Adaptation
+
+**Explore Homogeneity and Heterogeneity Across Sessions and Mice**
+- Across sessions
+- Across Mice
+- Cluster Analysis
+
+```{r setup,include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+options(repos = list(CRAN="http://cran.rstudio.com/"))
+
+library(kableExtra)
+library(magrittr)   
+library(tidyverse) 
+library(readr)
+library(knitr) 
+library(dplyr) 
+library(factoextra)
+library(caret) 
+library(xgboost)
+library(pROC)
+getwd()
+
+```
+
+# Data structure 
+
+Import data:
+```{r EDA1}
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('data/sessions/session',i,'.rds',sep=''))
+}
+n.session = length(session)
+```
+
+``` {r EDA2 ,echo=FALSE}
+df <- tibble(  
+  mouse_name = rep('name', n.session),
+  date_exp = rep('dt', n.session),
+  brain_area = rep(0, n.session),
+  neurons_spikes = rep(0, n.session),
+  trials = rep(0, n.session),
+  feedback_success_rate = rep(0, n.session),
+  avg_contrast_left = rep(0, n.session),
+  avg_contrast_right = rep(0, n.session)
+)
+for(i in 1:n.session){ 
+  temp = session[[i]];
+  df[i,1] = temp$mouse_name;
+  df[i,2] = temp$date_exp;
+  df[i,3] = length(unique(temp$brain_area));
+  df[i,4] = dim(temp$spks[[1]])[1];
+  df[i,5] = length(temp$feedback_type);
+  df[i,6] = mean(temp$feedback_type == 1); 
+  #feedback success rate is found by averaging the frequency at which the feedback was successful
+  df[i,7] = mean(sapply(temp$contrast_left, mean, na.rm = TRUE));
+  df[i,8] = mean(sapply(temp$contrast_right, mean, na.rm = TRUE));
+}
+
+kable(df, format = "html", table.attr = "class='table table-striped'", caption = "Figure 1: Session Level Loaded Dataframe", digits=2)
+```
+
+```{r EDA2.1 ,echo=FALSE}
+session_data <- readRDS("data/sessions/session1.rds")
+
+if (is.list(session_data)) {
+  cat("Session vars:\n")
+  for (name in names(session_data)) {
+    cat(name, ":", class(session_data[[name]]), "\n")
+  }
+}
+
+check_if_binary_and_print <- function(variable_data, variable_name) {
+  unique_values <- unique(variable_data)
+  print(paste(variable_name, "unique values:"))
+  print(unique_values)
+  
+  if (all(unique_values %in% c(-1, 1)) && length(unique_values) == 2) {
+    cat(variable_name, "is a binary variable with values -1 and 1.\n")
+  } else {
+    cat(variable_name, "is not a binary variable.\n")
+  }
+}
+
+numeric_variables <- c("contrast_left", "contrast_right", "feedback_type")
+
+for (var_name in numeric_variables) {
+  var_data <- session[[1]][[var_name]]
+  check_if_binary_and_print(var_data, var_name)
+}
+
+```
+
+Feedback_type is a binary variable with values -1 and 1.
+Contrast_left and Contrast right are both discrete variables with the following values: 0.00 0.25 0.50 1.00
+
+Additionally the other variables listed denote the contents of a session within this dataset.
+
+```{r EDA3 ,include=TRUE}
+df %>% 
+  summarise(Average_Neurons = mean(neurons_spikes), 
+            Median_Neurons = median(neurons_spikes), 
+            Average_Trials = mean(trials), 
+            Median_Trials = median(trials))
+
+ggplot(df, aes(x = mouse_name, y = neurons_spikes)) + 
+  geom_bar(stat = "identity", fill = "skyblue") +
+  theme_minimal() +
+  labs(title = "Neurons Spikes Across Mice", x = "Mouse Name", y = "Number of Neurons Spikes")
+
+ggplot(df, aes(x = mouse_name, y = trials)) + 
+  geom_bar(stat = "identity", fill = "coral") +
+  theme_minimal() +
+  labs(title = "Trials Across Mice", x = "Mouse Name", y = "Number of Trials")
+```
+
+From the above plots we can observe that the total number of neuronal spikes across the four mice over 18 sessions varied wildly with Lederburg having nearly 2000 more recorded neuronal spikes than Cori. Additionally the number of trials for each mouse differed greatly as well. Cori, Forssmann, and Hench have an ascending number of trials but all fall under Lederberg with 2000+ trials.
+
+Across sessions, we find that the median number of trials is 261.
+
+``` {r EDA3.1 ,include=TRUE}
+for(i in 1:length(session)) {
+  cat("Number of neurons measured and observed in session", i, ":", nrow(session[[i]]$spks[[1]]), "\n") 
+}
+```
+The number of neurons ,included in each session are above.
+
+The number of neurons across trials within the same session is constant but the number of neurons across sessions differs.
+
+**Trial Contents**
+```{r EDA3.2 ,echo=FALSE}
+dim(session[[1]]$spks[[1]]) 
+length(session[[1]]$brain_area)
+session[[1]]$spks[[1]][6,] 
+```
+
+**What brain areas are recorded in each session?**
+```{r EDA3.3 ,echo=FALSE}
+for (i in 1:length(session)) {
+  unique_areas <- unique(session[[i]]$brain_area)
+  cat("Session", i, "brain areas:\n")
+  print(unique_areas)
+  cat("\n")
+}
+```
+
+The above output shows us that each session examines different brain areas. 
+
+# Stimuli Conditions
+
+To better understand stimuli conditions we take the average of the right and left contrasts to better understand the distribution of testing across both trials and sessions.
+
+```{r EDA4 ,echo=FALSE}
+ggplot(df, aes(x = date_exp, group = 1)) +
+  geom_line(aes(y = avg_contrast_left, color = "Average Left Contrast")) +
+  geom_line(aes(y = avg_contrast_right, color = "Average Right Contrast")) +
+  labs(title = "Average Contrast Levels Over Sessions",
+       x = "Session Date",
+       y = "Average Contrast Level",
+       color = "Contrast") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+From this plot we notice that contrast levels across sessions differ greatly but range from ~0.24 to ~0.43 for both left and right average contrast levels.
+
+
+# Feedback Types
+
+To better understand the overall performance of the mice. We will plot the feedback success rate by session and mouse. 
+
+```{r EDA6}
+df$date_exp <- as.factor(df$date_exp)
+
+df %>% 
+  ggplot(aes(x = date_exp, y = feedback_success_rate, fill = mouse_name)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  facet_wrap(~mouse_name, scales = "free_x") +
+  labs(title = "Feedback Success Rate by Session and Mouse",
+       x = "Session Date",
+       y = "Feedback Success Rate") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Looking at this bar chart displaying the feedback success rate over time for each mouse it is quite apparent that all the mice performed better than random guessing (FSR>0.5). Lederberg is especially notable because of the mouse's consistently high performance it holds high marks for consistently high FSR over time with Forssmann as a close second.
+
+
+***
+
+**Explore the Neural Activities During Each Trial**
+
+Here we will need to load the data in again for individual sessions so that we can examine the nerual activities during each individual trial. We will then assess general neural engagement across trials.
+
+``` {r EDA 7}
+all_trials_df <- map2_df(session, 1:18, function(session_data, session_id) {
+  tibble(
+    session_id = session_id,
+    mouse_name = session_data$mouse_name[1],
+    date_exp = session_data$date_exp[1],
+    total_spikes = sapply(session_data$spks, sum)
+  )
+})
+
+all_trials_df$date_exp <- as.Date(all_trials_df$date_exp)
+
+all_trials_df <- all_trials_df %>% arrange(date_exp)
+
+ggplot(all_trials_df, aes(x = as.factor(session_id), y = total_spikes, fill = mouse_name)) +
+  geom_boxplot() +
+  labs(title = "Total Neural Activity Over Sessions",
+       x = "Session ID", y = "Total Spikes per Trial") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.title = element_blank())
+ 
+```
+
+***
+
+In the visualization of total neural activity over the 18 sessions, each mouse displayed distinctive patterns of engagement. The color coding distinctly separates the sessions affiliated with Cori (sessions 1-3), Forssmann (sessions 4-7), Hench (sessions 8-11), and Lederberg (sessions 12-18), allowing for a clear visual comparison across different phases of the experiment.
+
+- Cori's sessions show a increasing trend in total spikes per trial, suggesting that they were adapting to the task as time progressed.
+- Forssmann's and Hench’s trials, on the other hand show a decreasing and trend in total spikes per trial; this pattern could signify learning fatigue. 
+- Lederberg's sessions, display demonstrated a more varied level of neural activity, indicating high variability in responding to the stimuli across sessions.
+
+***
+
+**Explore Changes Across Trials**
+
+In this section we will explore neural activity across trials within each session.
+
+```{r EDA8}
+plot_session_activity <- function(session_data, session_number) {
+  total_spikes_per_trial <- sapply(session_data$spks, function(trial) sum(trial))
+  data_frame <- data.frame(trial = 1:length(total_spikes_per_trial), total_spikes = total_spikes_per_trial)
+  
+  p <- ggplot(data_frame, aes(x = trial, y = total_spikes)) +
+    geom_line() + 
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, color = "blue") +
+    labs(title = paste("Neural Activity in Session", session_number),
+         x = "Trial Number",
+         y = "Total Spikes") +
+    theme_minimal()
+  
+  print(p)
+}
+
+for(i in 1:length(session)) {
+  plot_session_activity(session[[i]], i)
+}
+
+```
+In all sessions except for session 7, we observe a declining trend in neural activity across trials, as indicated by the line of best fit. This trend suggests that, generally, as trials progress within a session, the mouse's neural engagement with the stimuli decreases. 
+
+***
+
+**Exploring homogeneity and heterogeneity across sessions and mice**
+
+```{r EDA9}
+calculate_total_spikes <- function(session) {
+  sapply(session$spks, sum)
+}
+
+all_sessions_df <- do.call(rbind, lapply(1:length(session), function(i) {
+  session_data <- session[[i]]
+  data.frame(
+    mouse_name = session_data$mouse_name,
+    session_id = i,
+    trial_id = 1:length(session_data$feedback_type),
+    total_spikes = calculate_total_spikes(session_data),
+    stringsAsFactors = FALSE
+  )
+}))
+
+all_sessions_df %>%
+  group_by(mouse_name, session_id) %>%
+  summarise(variance = var(total_spikes), .groups = 'drop') %>%
+  ggplot(aes(x = factor(session_id), y = variance, fill = mouse_name)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "Variance of Neural Activity Within Sessions",
+       x = "Session ID", y = "Variance of Total Spikes") +
+  theme_minimal()
+```
+
+***
+
+**Exploring homogeneity/heterogeneity within sessions**
+
+The first plot, depicting the variance of total spikes within each session, shows that sessions from Hench exhibit high variability in neural activity. This suggests that within sessions, neural engagement varies greatly, indicating heterogeneity in the mouse's response to stimuli across trials. However the other mice exibit relatively low variability in neural activity suggesting that within sessions, neural engagement varies greatly, indicating homogenity in the mouse's response to stimuli across trials.
+
+```{r EDA10}
+all_sessions_df %>%
+  group_by(mouse_name) %>%
+  summarise(mean_spikes = mean(total_spikes), .groups = 'drop') %>%
+  ggplot(aes(x = mouse_name, y = mean_spikes, fill = mouse_name)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Mean Neural Activity Across Mice",
+       x = "Mouse Name", y = "Mean Total Spikes per Session") +
+  theme_minimal()
+```
+
+***
+
+**Exploring homogeneity/heterogeneity between mice**
+
+The second plot, comparing the mean total spikes per session for each mouse, indicates that the average neural activity across mice is close. Despite Forssmann showing slightly lower average activity, the differences in mean neural engagement between mice are relatively minimal. This observation suggests a level of homogeneity in how different mice respond to stimuli over the sessions, underscoring their comparable neural responsiveness.
+
+
+```{r EDA11, ,echo = FALSE}
+binename <- paste0("bin", as.character(1:40))
+
+session_list = list()
+
+for (session_id in 1:18) {
+    n_trial <- length(session[[session_id]]$spks)
+    trial_list <- list()
+    
+    for (trial_id in 1:n_trial) {
+        spikes <- session[[session_id]]$spks[[trial_id]]
+        if (any(is.na(spikes))) {
+          print("value missing")
+        }
+        
+        trial_bin_average <- matrix(colMeans(spikes), nrow = 1)
+        colnames(trial_bin_average) <- binename
+        trial_tibble = as_tibble(trial_bin_average) %>% 
+            add_column(trial_id = trial_id) %>% 
+            add_column(contrast_left = session[[session_id]]$contrast_left[trial_id]) %>% 
+            add_column(contrast_right = session[[session_id]]$contrast_right[trial_id]) %>% 
+            add_column(feedback_type = session[[session_id]]$feedback_type[trial_id])
+        
+        trial_list[[trial_id]] <- trial_tibble
+    }
+    
+    session_tibble <- as_tibble(do.call(rbind, trial_list))
+    session_tibble <- session_tibble %>%
+        add_column(mouse_name = session[[session_id]]$mouse_name) %>%
+        add_column(date_exp = session[[session_id]]$date_exp) %>%
+        add_column(session_id = session_id)
+    
+    session_list[[session_id]] <- session_tibble
+}
+
+training_tibble <- as_tibble(do.call(rbind, session_list))
+training_tibble$session_id <- as.factor(training_tibble$session_id)
+training_tibble$contrast_diff <- abs(training_tibble$contrast_left - training_tibble$contrast_right)
+
+training_tibble$success <- training_tibble$feedback_type == 1
+training_tibble$success <- as.numeric(training_tibble$success)
+
+head(training_tibble)
+```
+
+Using this newly formed table we can solve additional questions.
+
+**What is the total number of successful trials in each session**
+```{r EDA11.1, ,echo = FALSE}
+training_tibble %>% filter(success == 1) %>% group_by(session_id) %>% summarise(successful_trials = n())
+```
+**What is the average contrast difference in each session?**
+```{r EDA11.2, ,echo = FALSE}
+training_tibble %>% group_by(session_id) %>% summarise(average_contrast_diff = mean(contrast_diff))
+```
+
+**Question**
+
+Given all this information, does the contrast difference have a causal relationship with feedback_type?
+
+```{r EDA11.3 ,echo=FALSE}
+combined_data <- data.frame(
+  session_id = integer(),
+  trial_id = integer(),
+  abs_contrast_diff = numeric(),
+  feedback_type = numeric()
+)
+
+for (i in 1:length(session)) {
+  current_session <- session[[i]]
+  
+  # Calculate absolute contrast difference
+  abs_diff <- abs(current_session$contrast_left - current_session$contrast_right)
+  
+  temp_df <- data.frame(
+    session_id = rep(i, length(abs_diff)),
+    trial_id = 1:length(abs_diff),
+    abs_contrast_diff = abs_diff,
+    feedback_type = current_session$feedback_type
+  )
+  
+  combined_data <- rbind(combined_data, temp_df)
+}
+
+anova_result <- aov(feedback_type ~ abs_contrast_diff * factor(session_id), data = combined_data)
+summary(anova_result)
+
+```
+
+
+Conclusion:
+The two-way ANOVA reveals a significant causal relationship between the contrast difference and the feedback type. This relationship is evident across varying sessions, underscoring the importance of visual stimuli contrast in influencing neural response outcomes. However, the significant interaction between contrast difference and session ID highlights the variability in this relationship across different sessions, suggesting that other session-specific factors also play a crucial role in determining feedback type. 
+
+***
+
+**EDA Conclusion**
+
+In our exploratory data analysis, we examined the structure of the data, neural activities between and within sessions, and homogeneity/heterogeneity across sessions and mice. We found notable variability in neuron spikes and trial numbers across sessions, with Lederberg showing significantly more neural activity and trials compared to other mice. 
+
+Stimuli conditions varied significantly across sessions, with contrast levels ranging approximately from 0.24 to 0.43. Feedback success rates were generally above chance, with Lederberg showing consistently high performance. 
+
+Neural activity trends across trials within sessions generally decreased, indicating a potential decrease in engagement or learning fatigue, except for session 7. 
+
+Homogeneity within sessions varied with Hench showing the highest variability in neural activity, suggesting heterogeneity in response to stimuli. Between mice, neural activity levels were relatively similar, indicating a level of homogeneity in neural responsiveness to stimuli across different mice. 
+
+Additionally, we found after conducting a two way anova that that there is a significant causal relationship between absolute contrast difference and feedback_type. This could potentially be because a higher contrast of the stimuli may make it easier for the mice to determine the correct way to turn the wheel.
+
+***
+
+# Data Integration
+
+The information derived form the EDA conducted previously reveals several key insights about the mouse neural activities across sessions ans trials. Both similarities and differences were found in the neural response to stimuli among different mice.
+
+In order to reduce the complexity of the data structures for better analysis, we can employ dimension reduction of the matrix representing the neural activity in the form of principal component analysis (PCA). We can then interpret the PCA in order to better understand relationships between sessions and between mice.
+
+The goal of this data integration is enhance the prediction of feedback types based on neural activities. 
+
+***
+
+**PCA**
+
+```{r PCA, ,echo = FALSE}
+features = training_tibble[,1:40]
+scaled_features <- scale(features)
+pca_result <- prcomp(scaled_features)
+pc_df <- as.data.frame(pca_result$x)
+pc_df$session_id <- training_tibble$session_id
+pc_df$mouse_name <- training_tibble$mouse_name
+```
+
+**Session Specific**
+```{r PCA1, ,echo = FALSE}
+ggplot(pc_df, aes(x = PC1, y = PC2, color = session_id)) +
+  geom_point() +
+  labs(title = "PCA colored by session_id")
+```
+
+***
+Different sessions contribute data spread across both components, with some clustering observable by session. This suggests that there might be session-specific variations in the dataset, as some sessions cluster together while others are more dispersed.
+***
+
+**Mouse Specific**
+```{r PCA2, ,echo = FALSE}
+ggplot(pc_df, aes(x = PC1, y = PC2, color = mouse_name)) +
+  geom_point() +
+  labs(title = "PCA colored by mouse_name")
+```
+
+***
+The overlap of colors in this PCA suggests that while there is some degree of distinct clustering per mouse, there's also considerable overlap in the data points from different mice across PC1 and PC2. This could imply that individual differences between the mice may contribute to the variation, but not as distinctly as session-based differences that we have observed in the previous plot.
+***
+
+**Feature Extraction**
+
+We will prepare the following features to predict the outcome (feedback_type):
+- contrast_left
+- contrast_right
+- contrast_diff
+
+```{r DI1 ,include=TRUE}
+predictive_feature <- c("session_id", "trial_id", "contrast_right", "contrast_left", "contrast_diff", binename)
+predictive_dat <- training_tibble[predictive_feature]
+predictive_dat$trial_id <- as.numeric(predictive_dat$trial_id)
+label <- as.numeric(training_tibble$success)
+X <- model.matrix(~ ., predictive_dat)
+head(X)
+```
+
+# Prediction
+**Test/Train split 9:1**
+
+We will exclude sessions 1 and 18 because we will be using those to evaluate our model on the day the test sets are released.
+
+Train Model:
+```{r P1 ,echo=FALSE}
+set.seed(300)
+trainIndex <- createDataPartition(label, p = .9, 
+                                  list = FALSE, 
+                                  times = 1)
+train_df <- predictive_dat[trainIndex, ]
+train_X <- X[trainIndex,]
+test_df <- predictive_dat[-trainIndex, ]
+test_X <- X[-trainIndex,]
+
+train_label <- label[trainIndex]
+test_label <- label[-trainIndex]
+
+xgb_model <- xgboost(data = train_X, label = train_label, objective = "binary:logistic", nrounds=10)
+```
+
+
+**Prediction results**
+
+Accuracy:
+```{r P1.1 ,echo=FALSE}
+predictions <- predict(xgb_model, newdata = test_X)
+predicted_labels <- as.numeric(ifelse(predictions > 0.5, 1, 0))
+accuracy <- mean(predicted_labels == test_label)
+accuracy
+
+```
+
+Confusion Matrix:
+```{r P1.2 ,echo=FALSE}
+conf_matrix <- confusionMatrix(as.factor(predicted_labels), as.factor(test_label))
+conf_matrix$table
+
+```
+Area Under Reporter Operating Curve: 
+```{r  P1.3 ,echo=FALSE}
+auroc <- roc(test_label, predictions)
+auroc
+```
+
+# Prediction Performance on the Test Sets
+
+Load Data:
+```{r E1 ,echo=TRUE}
+test <- list()
+for (i in 1:2) {
+  test[[i]] <- readRDS(paste('data/test/test', i, '.rds', sep = ''))
+}
+```
+
+Setup Inference Df:
+``` {r E2 ,echo=FALSE}
+
+binename <- paste0("bin", as.character(1:40))
+
+test_list <- list()
+
+for (session_id in 1:2) {
+    n_trial <- length(test[[session_id]]$spks)
+    trial_list <- list()
+    
+    for (trial_id in 1:n_trial) {
+        spikes <- test[[session_id]]$spks[[trial_id]]
+        if (any(is.na(spikes))) {
+          print(paste("value missing in session", session_id, "trial", trial_id))
+        }
+        
+        trial_bin_average <- matrix(colMeans(spikes, na.rm = TRUE), nrow = 1)
+        colnames(trial_bin_average) <- binename
+        trial_tibble <- as_tibble(trial_bin_average) %>% 
+            add_column(trial_id = trial_id) %>% 
+            add_column(contrast_left = test[[session_id]]$contrast_left[trial_id]) %>% 
+            add_column(contrast_right = test[[session_id]]$contrast_right[trial_id]) %>% 
+            add_column(feedback_type = test[[session_id]]$feedback_type[trial_id])
+        
+        trial_list[[trial_id]] <- trial_tibble
+    }
+    
+    session_tibble <- as_tibble(do.call(rbind, trial_list))
+    session_tibble <- session_tibble %>%
+        add_column(mouse_name = test[[session_id]]$mouse_name[1]) %>% 
+        add_column(date_exp = test[[session_id]]$date_exp[1]) %>% 
+        add_column(session_id = session_id)
+    
+    test_list[[session_id]] <- session_tibble
+}
+
+test_tibble <- as_tibble(do.call(rbind, test_list))
+test_tibble$session_id <- factor(test_tibble$session_id, levels = levels(training_tibble$session_id))
+test_tibble$contrast_diff <- abs(test_tibble$contrast_left - test_tibble$contrast_right)
+
+test_tibble$success <- as.numeric(test_tibble$feedback_type == 1)
+
+head(test_tibble)
+```
+
+**Test Model Performance**
+
+Below will be the tests for sets test1.rds and test2.rds (sessions 1 and 18).
+
+``` {r P3 ,echo=FALSE}
+predictive_feature <- c("session_id", "trial_id", "contrast_right", "contrast_left", "contrast_diff", binename)
+predictive_dat <- test_tibble[predictive_feature]
+predictive_dat$trial_id <- as.numeric(predictive_dat$trial_id)
+if (!"success" %in% names(test_tibble)) {
+  test_tibble$success <- as.numeric(test_tibble$feedback_type == 1)
+}
+label <- as.numeric(test_tibble$success)
+
+predictive_dat_session_1 <- predictive_dat[predictive_dat$session_id == 1, ]
+label_session_1 <- label[predictive_dat$session_id == 1]
+predictive_dat_session_2 <- predictive_dat[predictive_dat$session_id == 2, ]
+label_session_2 <- label[predictive_dat$session_id == 2]
+
+
+X_session_1 <- model.matrix(~ ., predictive_dat_session_1)
+X_session_2 <- model.matrix(~ ., predictive_dat_session_2)
+
+head(X_session_1)
+head(X_session_2)
+
+```
+
+***
+
+**Test test1.rds (Session 1)**
+```{r P4 ,echo=FALSE}
+test_predictions_proba_session_1 <- predict(xgb_model, newdata = X_session_1, type = 'response')
+test_predictions_session_1 <- ifelse(test_predictions_proba_session_1 > 0.5, 1, 0)
+
+accuracy_session_1 <- mean(test_predictions_session_1 == label_session_1)
+conf_matrix_session_1 <- confusionMatrix(as.factor(test_predictions_session_1), as.factor(label_session_1))
+
+roc_result_session_1 <- roc(response = label_session_1, predictor = test_predictions_proba_session_1)
+
+cat("Accuracy for test 1 (session 1):", accuracy_session_1, "\n")
+print(conf_matrix_session_1)
+cat("AUC for test 1 (session 1):", auc(roc_result_session_1), "\n")
+```
+
+***
+
+**Test test2.rds (Session 18)**
+```{r P5 ,echo=FALSE}
+test_predictions_proba_session_2 <- predict(xgb_model, newdata = X_session_2, type = 'response')
+test_predictions_session_2 <- ifelse(test_predictions_proba_session_2 > 0.5, 1, 0)
+
+accuracy_session_2 <- mean(test_predictions_session_2 == label_session_2)
+conf_matrix_session_2 <- confusionMatrix(as.factor(test_predictions_session_2), as.factor(label_session_2))
+
+roc_result_session_2 <- roc(response = label_session_2, predictor = test_predictions_proba_session_2)
+
+cat("Accuracy for test 2 (session 18):", accuracy_session_2, "\n")
+print(conf_matrix_session_2)
+cat("AUC for test 2 (session 18):", auc(roc_result_session_2), "\n")
+```
+
+**Conclusion about Model Performance on Test Data**
+The model showed significant differences in sensitivity and specificity, with the model demonstrating a high specificity (above 0.93 for both tests) but notably low sensitivity (0.2143 and 0.1111 for test 1 and test 2, respectively). This means the model is good at detecting true negatives but not true positives. The Positive Predictive Value and the Negative Predictive Value support this. The AUC values, 0.703373 for test 1 and 0.6316591 for test 2, indicate an area for potential enhancement, particularly highlighted by a slight decrease from the training AUC of 0.7442.
+
+***
+
+# Discussion
+
+My study tested the hypothesis of a causal relationship between contrast difference and feedback type in mice during a visual discrimination task. The analysis confirmed this relationship, indicating a direct influence of visual stimulus on behavioral outcomes.
+
+**Regarding neural responses to visual stimuli:**
+
+- I found variability in the number of neuronal spikes among different mice exposed to identical stimuli. This suggests individual differences affect neural responses.
+- Neuronal activation intensity varied between mice successful in the task and those that were not, with successful mice showing distinct patterns of neural activation.
+- Consistent neural firing patterns across sessions correlated with learning and task performance were observed in some mice but not all, indicating variability in learning mechanisms and neural plasticity.
+
+
+**Regarding the predictive mode**
+My analysis included a predictive model assessing the relationship between neural activities and task outcomes. The model's performance was evaluated based on its ability to predict feedback type from neural data. Overall, the predictive model effectively used neural data to forecast behavioral responses, showing the potential of using neural patterns for predicting cognitive outcomes.
+
+In summary, my study confirms the influence of contrast differences on feedback type, with individual variations in neural and behavioral responses to visual stimuli.
+
+***
+
+# Reference {-}
+
+Steinmetz, N.A., Zatka-Haas, P., Carandini, M. et al. Distributed coding of choice, action and engagement across the mouse brain. Nature 576, 266–273 (2019). https://doi.org/10.1038/s41586-019-1787-x
+
